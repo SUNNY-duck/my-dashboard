@@ -1,6 +1,7 @@
 ﻿# World Clock widget : Los Angeles (LA) / Tokyo
 # - Always on top, top-right corner, semi-transparent
-# - Drag with left mouse button, right-click for menu (settings, close)
+# - Drag with left mouse button, Ctrl + mouse wheel to resize (size and position are remembered)
+# - Right-click for menu (settings, size, close)
 # - First run asks whether to start with Windows; change later in right-click > settings
 
 # ===== Settings =====
@@ -130,7 +131,7 @@ $zones = @(
         Topmost="True" ShowInTaskbar="False" ResizeMode="NoResize"
         SizeToContent="WidthAndHeight" WindowStartupLocation="Manual"
         Left="-3000" Top="0">
-  <Border CornerRadius="12" Background="#FF121218" Padding="18,10,18,10"
+  <Border x:Name="Root" CornerRadius="12" Background="#FF121218" Padding="18,10,18,10"
           BorderBrush="#FF2A2A35" BorderThickness="1">
     <StackPanel x:Name="Rows"/>
   </Border>
@@ -142,6 +143,15 @@ $window = [Windows.Markup.XamlReader]::Load($reader)
 $window.Opacity = $Opacity
 Set-WcWindowIcon $window
 $rows = $window.FindName('Rows')
+$root = $window.FindName('Root')
+
+# Size (scale) saved per PC
+$script:scale = 1.0
+if ($script:settings.PSObject.Properties['Scale']) {
+    try { $script:scale = [Math]::Min(2.0, [Math]::Max(0.6, [double]$script:settings.Scale)) } catch { }
+}
+$script:scaleTf = New-Object System.Windows.Media.ScaleTransform($script:scale, $script:scale)
+$root.LayoutTransform = $script:scaleTf
 
 $bc       = New-Object System.Windows.Media.BrushConverter
 $culture  = [Globalization.CultureInfo]::InvariantCulture
@@ -215,16 +225,61 @@ $timer.Interval = [TimeSpan]::FromMilliseconds(1000)
 $timer.Add_Tick($update)
 $timer.Start()
 
+# Save size and position so the next start opens the same way
+function Save-WcLayout {
+    $script:settings | Add-Member -NotePropertyName Scale -NotePropertyValue ([Math]::Round($script:scale, 2)) -Force
+    $script:settings | Add-Member -NotePropertyName Left  -NotePropertyValue ([Math]::Round($window.Left)) -Force
+    $script:settings | Add-Member -NotePropertyName Top   -NotePropertyValue ([Math]::Round($window.Top)) -Force
+    try { Save-WcSettings $script:settings } catch { }
+}
+
 # Place at top-right of the work area
 $placeTopRight = {
     $wa = [System.Windows.SystemParameters]::WorkArea
     $window.Left = $wa.Right - $window.ActualWidth - $Margin
     $window.Top  = $wa.Top + $Margin
+    Save-WcLayout
 }
-$window.Add_ContentRendered($placeTopRight)
+
+# First show: restore the last position if it is still on a screen, otherwise top-right
+$window.Add_ContentRendered({
+    $restored = $false
+    if ($script:settings.PSObject.Properties['Left'] -and $script:settings.PSObject.Properties['Top']) {
+        $l = [double]$script:settings.Left; $t = [double]$script:settings.Top
+        $vl = [System.Windows.SystemParameters]::VirtualScreenLeft
+        $vt = [System.Windows.SystemParameters]::VirtualScreenTop
+        $vr = $vl + [System.Windows.SystemParameters]::VirtualScreenWidth
+        $vb = $vt + [System.Windows.SystemParameters]::VirtualScreenHeight
+        if ($l -ge $vl -and $t -ge $vt -and ($l + 40) -le $vr -and ($t + 20) -le $vb) {
+            $window.Left = $l; $window.Top = $t; $restored = $true
+        }
+    }
+    if (-not $restored) { & $placeTopRight }
+})
+
+# Change size, keeping the right edge in place
+function Set-WcScale([double]$value) {
+    $value = [Math]::Round([Math]::Min(2.0, [Math]::Max(0.6, $value)), 2)
+    $right = $window.Left + $window.ActualWidth
+    $script:scale = $value
+    $script:scaleTf.ScaleX = $value
+    $script:scaleTf.ScaleY = $value
+    $window.UpdateLayout()
+    $window.Left = $right - $window.ActualWidth
+    Save-WcLayout
+}
+
+# Ctrl + mouse wheel on the clock changes the size
+$window.Add_PreviewMouseWheel({
+    param($sender, $e)
+    if (([System.Windows.Input.Keyboard]::Modifiers -band [System.Windows.Input.ModifierKeys]::Control) -ne 0) {
+        if ($e.Delta -gt 0) { Set-WcScale ($script:scale + 0.1) } else { Set-WcScale ($script:scale - 0.1) }
+        $e.Handled = $true
+    }
+})
 
 # Drag to move
-$window.Add_MouseLeftButtonDown({ $window.DragMove() })
+$window.Add_MouseLeftButtonDown({ $window.DragMove(); Save-WcLayout })
 
 # Settings window
 $openSettings = {
@@ -294,13 +349,31 @@ $menu = New-Object System.Windows.Controls.ContextMenu
 $settingsItem = New-Object System.Windows.Controls.MenuItem
 $settingsItem.Header = '설정'
 $settingsItem.Add_Click($openSettings)
+$sizeItem = New-Object System.Windows.Controls.MenuItem
+$sizeItem.Header = '크기'
+$bigger = New-Object System.Windows.Controls.MenuItem
+$bigger.Header = '크게 (Ctrl + 휠 위로)'
+$bigger.StaysOpenOnClick = $true
+$bigger.Add_Click({ Set-WcScale ($script:scale + 0.1) })
+$smaller = New-Object System.Windows.Controls.MenuItem
+$smaller.Header = '작게 (Ctrl + 휠 아래로)'
+$smaller.StaysOpenOnClick = $true
+$smaller.Add_Click({ Set-WcScale ($script:scale - 0.1) })
+$normal = New-Object System.Windows.Controls.MenuItem
+$normal.Header = '원래 크기'
+$normal.Add_Click({ Set-WcScale 1.0 })
+[void]$sizeItem.Items.Add($bigger)
+[void]$sizeItem.Items.Add($smaller)
+[void]$sizeItem.Items.Add($normal)
+
 $reset = New-Object System.Windows.Controls.MenuItem
 $reset.Header = '오른쪽 위로 이동'
 $reset.Add_Click($placeTopRight)
 $close = New-Object System.Windows.Controls.MenuItem
 $close.Header = '닫기'
-$close.Add_Click({ $timer.Stop(); $window.Close() })
+$close.Add_Click({ Save-WcLayout; $timer.Stop(); $window.Close() })
 [void]$menu.Items.Add($settingsItem)
+[void]$menu.Items.Add($sizeItem)
 [void]$menu.Items.Add($reset)
 [void]$menu.Items.Add($close)
 $window.ContextMenu = $menu
