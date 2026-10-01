@@ -63,28 +63,53 @@ try {
     Remove-Item -LiteralPath "$IconPath.download" -Force -ErrorAction SilentlyContinue
 }
 
-# Create the "세계시계" desktop shortcut once (not recreated if the user deletes it)
-if (-not $script:settings.PSObject.Properties['ShortcutCreated']) {
-    try {
-        $lnkPath = Join-Path ([Environment]::GetFolderPath('Desktop')) '세계시계.lnk'
-        $shell = New-Object -ComObject WScript.Shell
-        $lnk = $shell.CreateShortcut($lnkPath)
-        if (Test-Path -LiteralPath $StableLauncher) {
-            $lnk.TargetPath  = $StableLauncher
-            $lnk.WindowStyle = 7   # minimized
-        } else {
-            $lnk.TargetPath  = 'powershell.exe'
-            $lnk.Arguments   = '-NoProfile -ExecutionPolicy Bypass -STA -WindowStyle Hidden -File "' + $PSCommandPath + '"'
-            $lnk.WindowStyle = 7
-        }
-        $lnk.WorkingDirectory = $AppDir
-        if (Test-Path -LiteralPath $IconPath) { $lnk.IconLocation = "$IconPath,0" }
-        $lnk.Description = 'World Clock (LA / Tokyo)'
-        $lnk.Save()
-        $script:settings | Add-Member -NotePropertyName ShortcutCreated -NotePropertyValue $true -Force
-        Save-WcSettings $script:settings
-    } catch { }
+$ShortcutPath = Join-Path ([Environment]::GetFolderPath('Desktop')) '세계시계.lnk'
+
+function New-WcShortcut {
+    # Copy the icon under a new file name each time so Windows does not show a cached old icon
+    $iconForLnk = $null
+    if (Test-Path -LiteralPath $IconPath) {
+        Get-ChildItem -LiteralPath $AppDir -Filter 'WorldClock_*.ico' -ErrorAction SilentlyContinue |
+            Remove-Item -Force -ErrorAction SilentlyContinue
+        $iconForLnk = Join-Path $AppDir ('WorldClock_' + (Get-Date -Format 'yyyyMMddHHmmss') + '.ico')
+        Copy-Item -LiteralPath $IconPath -Destination $iconForLnk -Force
+    }
+    $shell = New-Object -ComObject WScript.Shell
+    $lnk = $shell.CreateShortcut($ShortcutPath)
+    if (Test-Path -LiteralPath $StableLauncher) {
+        $lnk.TargetPath = $StableLauncher
+        $lnk.Arguments  = ''
+    } else {
+        $lnk.TargetPath = 'powershell.exe'
+        $lnk.Arguments  = '-NoProfile -ExecutionPolicy Bypass -STA -WindowStyle Hidden -File "' + $PSCommandPath + '"'
+    }
+    $lnk.WindowStyle      = 7   # minimized
+    $lnk.WorkingDirectory = $AppDir
+    if ($iconForLnk) { $lnk.IconLocation = "$iconForLnk,0" }
+    $lnk.Description = 'World Clock (LA / Tokyo)'
+    $lnk.Save()
+
+    $script:settings | Add-Member -NotePropertyName ShortcutCreated -NotePropertyValue $true -Force
+    $script:settings | Add-Member -NotePropertyName IconHash -NotePropertyValue $script:iconHash -Force
+    Save-WcSettings $script:settings
+    try { Start-Process ie4uinit.exe -ArgumentList '-show' -WindowStyle Hidden } catch { }
 }
+
+$script:iconHash = ''
+if (Test-Path -LiteralPath $IconPath) {
+    try { $script:iconHash = (Get-FileHash -LiteralPath $IconPath -Algorithm SHA256).Hash } catch { }
+}
+
+try {
+    if (-not $script:settings.PSObject.Properties['ShortcutCreated']) {
+        # First run: create the shortcut once (not recreated automatically if the user deletes it)
+        New-WcShortcut
+    } elseif ((Test-Path -LiteralPath $ShortcutPath) -and $script:iconHash -and
+              ($script:settings.PSObject.Properties['IconHash'] -eq $null -or $script:settings.IconHash -ne $script:iconHash)) {
+        # Icon changed on GitHub: refresh the existing shortcut
+        New-WcShortcut
+    }
+} catch { }
 
 function Set-WcWindowIcon($w) {
     if (Test-Path -LiteralPath $IconPath) {
@@ -219,6 +244,20 @@ $openSettings = {
     $script:cbAuto.FontSize = 14
     $script:cbAuto.IsChecked = [bool]$script:settings.AutoStart
 
+    $remake = New-Object System.Windows.Controls.Button
+    $remake.Content = '바탕화면 바로가기 다시 만들기'
+    $remake.Margin  = [System.Windows.Thickness]::new(0, 14, 0, 0)
+    $remake.Padding = [System.Windows.Thickness]::new(10, 4, 10, 4)
+    $remake.HorizontalAlignment = 'Left'
+    $remake.Add_Click({
+        try {
+            New-WcShortcut
+            [void][System.Windows.MessageBox]::Show($script:setWin, '바탕화면에 바로가기를 다시 만들었습니다.', '세계시계')
+        } catch {
+            [void][System.Windows.MessageBox]::Show($script:setWin, '바로가기를 만들지 못했습니다.', '세계시계')
+        }
+    })
+
     $buttons = New-Object System.Windows.Controls.StackPanel
     $buttons.Orientation = 'Horizontal'
     $buttons.HorizontalAlignment = 'Right'
@@ -244,6 +283,7 @@ $openSettings = {
     [void]$buttons.Children.Add($save)
     [void]$buttons.Children.Add($cancel)
     [void]$panel.Children.Add($script:cbAuto)
+    [void]$panel.Children.Add($remake)
     [void]$panel.Children.Add($buttons)
     $script:setWin.Content = $panel
     [void]$script:setWin.ShowDialog()
