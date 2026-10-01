@@ -5,7 +5,7 @@
 # - First run asks whether to start with Windows; change later in right-click > settings
 
 # ===== Settings =====
-$Opacity = 0.7     # 1.0 = solid, 0.7 = 70% opacity
+# Background transparency, time color and layout are chosen in right-click > settings
 $Margin  = 12      # distance from screen edge (px)
 # ====================
 
@@ -220,7 +220,21 @@ $root = $window.FindName('Root')
 $bc       = New-Object System.Windows.Media.BrushConverter
 $culture  = [Globalization.CultureInfo]::InvariantCulture
 $timeFont = New-Object System.Windows.Media.FontFamily 'Segoe UI Black, Arial Black, Segoe UI'
-$DateColor = '#FFC9CED4'   # date text (brighter)
+$DateColor = '#FFE1E4E8'   # date text (bright, bold)
+
+# Background transparency (0-90%, 10% steps) and time color, saved per PC
+$TimeColors = [ordered]@{ '#FF6CFFA8' = '민트 (기본)'; '#FFFFAEC9' = '핑크'; '#FFFFF200' = '노랑' }
+$script:bgTransparency = 30
+$script:timeColor = '#FF6CFFA8'
+$p = $script:settings.PSObject.Properties['BgTransparency']
+if ($p) { try { $script:bgTransparency = [int][Math]::Min(90, [Math]::Max(0, [int]$p.Value)) } catch { } }
+$p = $script:settings.PSObject.Properties['TimeColor']
+if ($p -and $TimeColors.Contains([string]$p.Value)) { $script:timeColor = [string]$p.Value }
+
+function Get-WcBgBrush([string]$rgb) {
+    $alpha = [int][Math]::Round(255 * (100 - $script:bgTransparency) / 100)
+    return $bc.ConvertFromString(('#{0:X2}{1}' -f $alpha, $rgb))
+}
 
 # ===== Display mode: Classic (stacked), BarA (taskbar, two-line labels), BarB (taskbar, one line) =====
 $Modes = @('Classic', 'BarA', 'BarB')
@@ -259,7 +273,7 @@ function New-WcTime([double]$size) {
     $tb.FontFamily = $timeFont
     $tb.FontWeight = [System.Windows.FontWeights]::Black
     $tb.FontSize = $size
-    $tb.Foreground = $bc.ConvertFromString('#FF6CFFA8')
+    $tb.Foreground = $bc.ConvertFromString($script:timeColor)
     $tb.VerticalAlignment = 'Center'
     $tb.SetValue([System.Windows.Documents.Typography]::NumeralAlignmentProperty, [System.Windows.FontNumeralAlignment]::Tabular)
     return $tb
@@ -281,9 +295,7 @@ function Build-WcView {
 
     switch ($script:mode) {
         'Classic' {
-            $window.Opacity = $Opacity
             $root.CornerRadius = [System.Windows.CornerRadius]::new(12)
-            $root.Background = $bc.ConvertFromString('#FF121218')
             $root.Padding = [System.Windows.Thickness]::new(18, 10, 18, 10)
             $panel = New-Object System.Windows.Controls.StackPanel
             [System.Windows.Controls.Grid]::SetIsSharedSizeScope($panel, $true)
@@ -300,7 +312,7 @@ function Build-WcView {
                 $left = New-Object System.Windows.Controls.StackPanel
                 $left.VerticalAlignment = 'Center'
                 $city = New-WcText 'Segoe UI' 17 $bold '#FFE6E6E6'
-                $date = New-WcText 'Consolas' 12 $normalW $DateColor
+                $date = New-WcText 'Segoe UI' 17 $bold $DateColor
                 [void]$left.Children.Add($city); [void]$left.Children.Add($date)
                 $time = New-WcTime 36
                 $time.Margin = [System.Windows.Thickness]::new(10, 0, 0, 0)
@@ -312,9 +324,7 @@ function Build-WcView {
             $root.Child = $panel
         }
         'BarA' {
-            $window.Opacity = 1.0
             $root.CornerRadius = [System.Windows.CornerRadius]::new(8)
-            $root.Background = $bc.ConvertFromString('#E6121218')
             $root.Padding = [System.Windows.Thickness]::new(12, 3, 12, 3)
             $panel = New-Object System.Windows.Controls.StackPanel
             $panel.Orientation = 'Horizontal'
@@ -325,7 +335,7 @@ function Build-WcView {
                 $left = New-Object System.Windows.Controls.StackPanel
                 $left.VerticalAlignment = 'Center'
                 $city = New-WcText 'Segoe UI' 11 $bold '#FFE6E6E6'
-                $date = New-WcText 'Consolas' 10 $normalW $DateColor
+                $date = New-WcText 'Segoe UI' 11 $bold $DateColor
                 [void]$left.Children.Add($city); [void]$left.Children.Add($date)
                 $time = New-WcTime 22
                 $time.Margin = [System.Windows.Thickness]::new(8, 0, 0, 0)
@@ -335,9 +345,7 @@ function Build-WcView {
             $root.Child = $panel
         }
         'BarB' {
-            $window.Opacity = 1.0
             $root.CornerRadius = [System.Windows.CornerRadius]::new(15)
-            $root.Background = $bc.ConvertFromString('#E6121218')
             $root.Padding = [System.Windows.Thickness]::new(14, 2, 14, 2)
             $panel = New-Object System.Windows.Controls.StackPanel
             $panel.Orientation = 'Horizontal'
@@ -348,7 +356,7 @@ function Build-WcView {
                 $city = New-WcText 'Segoe UI' 11 $bold '#FFCFD3D8'
                 $time = New-WcTime 17
                 $time.Margin = [System.Windows.Thickness]::new(8, 0, 8, 0)
-                $date = New-WcText 'Consolas' 10 $normalW $DateColor
+                $date = New-WcText 'Segoe UI' 11 $bold $DateColor
                 [void]$panel.Children.Add($city); [void]$panel.Children.Add($time); [void]$panel.Children.Add($date)
                 [void]$list.Add([pscustomobject]@{ Zone = $z; Tz = [TimeZoneInfo]::FindSystemTimeZoneById($z.Id); City = $city; Date = $date; Time = $time; CityFmt = 'label'; DateFmt = 'MM-dd ddd' })
             }
@@ -356,6 +364,9 @@ function Build-WcView {
         }
     }
     $script:items = $list
+    $window.Opacity = 1.0
+    $root.Background  = Get-WcBgBrush '121218'
+    $root.BorderBrush = Get-WcBgBrush '2A2A35'
 
     $s = Get-WcSetting ("Scale_" + $script:mode)
     $script:scale = 1.0
@@ -522,6 +533,59 @@ $openSettings = {
         [void]$panel.Children.Add($rb)
     }
 
+    $bgTitle = New-Object System.Windows.Controls.TextBlock
+    $bgTitle.Text = '배경 투명도'
+    $bgTitle.FontSize = 14
+    $bgTitle.FontWeight = [System.Windows.FontWeights]::Bold
+    $bgTitle.Margin = [System.Windows.Thickness]::new(0, 14, 0, 6)
+    [void]$panel.Children.Add($bgTitle)
+
+    $script:bgCombo = New-Object System.Windows.Controls.ComboBox
+    $script:bgCombo.Width = 120
+    $script:bgCombo.HorizontalAlignment = 'Left'
+    $script:bgCombo.Margin = [System.Windows.Thickness]::new(4, 0, 0, 0)
+    foreach ($v in 0..9) {
+        $pct = $v * 10
+        $label = if ($pct -eq 0) { '0% (불투명)' } else { "$pct%" }
+        $ci = New-Object System.Windows.Controls.ComboBoxItem
+        $ci.Content = $label
+        $ci.Tag = $pct
+        [void]$script:bgCombo.Items.Add($ci)
+        if ($pct -eq $script:bgTransparency) { $script:bgCombo.SelectedItem = $ci }
+    }
+    [void]$panel.Children.Add($script:bgCombo)
+
+    $colorTitle = New-Object System.Windows.Controls.TextBlock
+    $colorTitle.Text = '시간 색'
+    $colorTitle.FontSize = 14
+    $colorTitle.FontWeight = [System.Windows.FontWeights]::Bold
+    $colorTitle.Margin = [System.Windows.Thickness]::new(0, 14, 0, 6)
+    [void]$panel.Children.Add($colorTitle)
+
+    $script:colorRadios = @{}
+    foreach ($hex in $TimeColors.Keys) {
+        $row = New-Object System.Windows.Controls.StackPanel
+        $row.Orientation = 'Horizontal'
+        $sw = New-Object System.Windows.Shapes.Rectangle
+        $sw.Width = 14; $sw.Height = 14
+        $sw.RadiusX = 3; $sw.RadiusY = 3
+        $sw.Fill = $bc.ConvertFromString($hex)
+        $sw.Stroke = $bc.ConvertFromString('#FF888888')
+        $sw.Margin = [System.Windows.Thickness]::new(0, 0, 6, 0)
+        $txt = New-Object System.Windows.Controls.TextBlock
+        $txt.Text = $TimeColors[$hex]
+        [void]$row.Children.Add($sw); [void]$row.Children.Add($txt)
+        $rb = New-Object System.Windows.Controls.RadioButton
+        $rb.Content = $row
+        $rb.GroupName = 'WcColor'
+        $rb.FontSize = 13
+        $rb.VerticalContentAlignment = 'Center'
+        $rb.Margin = [System.Windows.Thickness]::new(4, 2, 0, 2)
+        $rb.IsChecked = ($script:timeColor -eq $hex)
+        $script:colorRadios[$hex] = $rb
+        [void]$panel.Children.Add($rb)
+    }
+
     $line = New-Object System.Windows.Controls.Separator
     $line.Margin = [System.Windows.Thickness]::new(0, 12, 0, 12)
     [void]$panel.Children.Add($line)
@@ -557,8 +621,21 @@ $openSettings = {
     $save.Add_Click({
         $script:settings.AutoStart = [bool]$script:cbAuto.IsChecked
         try { Set-WcAutoStart ([bool]$script:settings.AutoStart) } catch { }
-        foreach ($k in $script:modeRadios.Keys) {
-            if ($script:modeRadios[$k].IsChecked) { Set-WcMode $k }
+        if ($script:bgCombo.SelectedItem) { $script:bgTransparency = [int]$script:bgCombo.SelectedItem.Tag }
+        foreach ($k in $script:colorRadios.Keys) { if ($script:colorRadios[$k].IsChecked) { $script:timeColor = $k } }
+        Set-WcSetting 'BgTransparency' $script:bgTransparency
+        Set-WcSetting 'TimeColor' $script:timeColor
+        $newMode = $script:mode
+        foreach ($k in $script:modeRadios.Keys) { if ($script:modeRadios[$k].IsChecked) { $newMode = $k } }
+        if ($newMode -ne $script:mode) {
+            Set-WcMode $newMode
+        } else {
+            # Same layout: redraw with the new colors, keeping the right edge in place
+            $right = $window.Left + $window.ActualWidth
+            Build-WcView
+            $window.UpdateLayout()
+            $window.Left = $right - $window.ActualWidth
+            Save-WcLayout
         }
         Save-WcSettings $script:settings
         $script:setWin.Close()
