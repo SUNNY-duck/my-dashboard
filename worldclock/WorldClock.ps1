@@ -50,6 +50,46 @@ if (-not $script:settings) {
 try { Set-WcAutoStart ([bool]$script:settings.AutoStart) } catch { }
 # =========================================================
 
+# ===== Icon and desktop shortcut =====
+$IconUrl  = 'https://raw.githubusercontent.com/SUNNY-duck/my-dashboard/main/worldclock/WorldClock.ico'
+$IconPath = Join-Path $AppDir 'WorldClock.ico'
+if (-not (Test-Path -LiteralPath $IconPath)) {
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        Invoke-WebRequest -Uri $IconUrl -OutFile $IconPath -UseBasicParsing -TimeoutSec 8 -ErrorAction Stop
+    } catch { }
+}
+
+# Create the "세계시계" desktop shortcut once (not recreated if the user deletes it)
+if (-not $script:settings.PSObject.Properties['ShortcutCreated']) {
+    try {
+        $lnkPath = Join-Path ([Environment]::GetFolderPath('Desktop')) '세계시계.lnk'
+        $shell = New-Object -ComObject WScript.Shell
+        $lnk = $shell.CreateShortcut($lnkPath)
+        if (Test-Path -LiteralPath $StableLauncher) {
+            $lnk.TargetPath  = $StableLauncher
+            $lnk.WindowStyle = 7   # minimized
+        } else {
+            $lnk.TargetPath  = 'powershell.exe'
+            $lnk.Arguments   = '-NoProfile -ExecutionPolicy Bypass -STA -WindowStyle Hidden -File "' + $PSCommandPath + '"'
+            $lnk.WindowStyle = 7
+        }
+        $lnk.WorkingDirectory = $AppDir
+        if (Test-Path -LiteralPath $IconPath) { $lnk.IconLocation = "$IconPath,0" }
+        $lnk.Description = 'World Clock (LA / Tokyo)'
+        $lnk.Save()
+        $script:settings | Add-Member -NotePropertyName ShortcutCreated -NotePropertyValue $true -Force
+        Save-WcSettings $script:settings
+    } catch { }
+}
+
+function Set-WcWindowIcon($w) {
+    if (Test-Path -LiteralPath $IconPath) {
+        try { $w.Icon = [System.Windows.Media.Imaging.BitmapFrame]::Create([Uri]$IconPath) } catch { }
+    }
+}
+# =====================================
+
 $zones = @(
     @{ Label = 'LA';    Id = 'Pacific Standard Time'; Std = 'PST'; Dst = 'PDT' }  # Amazon US report time, DST applied automatically
     @{ Label = 'TOKYO'; Id = 'Tokyo Standard Time';   Std = 'JST'; Dst = 'JST' }
@@ -72,6 +112,7 @@ $zones = @(
 $reader = New-Object System.Xml.XmlNodeReader $xaml
 $window = [Windows.Markup.XamlReader]::Load($reader)
 $window.Opacity = $Opacity
+Set-WcWindowIcon $window
 $rows = $window.FindName('Rows')
 
 $bc       = New-Object System.Windows.Media.BrushConverter
@@ -165,6 +206,7 @@ $openSettings = {
     $script:setWin.ResizeMode = 'NoResize'
     $script:setWin.WindowStartupLocation = 'CenterScreen'
     $script:setWin.Topmost = $true
+    Set-WcWindowIcon $script:setWin
 
     $panel = New-Object System.Windows.Controls.StackPanel
     $panel.Margin = [System.Windows.Thickness]::new(24, 20, 24, 18)
