@@ -1,7 +1,7 @@
 ﻿# World Clock widget : Los Angeles (LA) / Tokyo
 # - Always on top, top-right corner, semi-transparent
 # - Drag with left mouse button, Ctrl + mouse wheel to resize (size and position are remembered)
-# - Right-click for menu (settings, size, close)
+# - Right-click for menu (settings, size, close); settings can switch between stacked and taskbar layouts
 # - First run asks whether to start with Windows; change later in right-click > settings
 
 # ===== Settings =====
@@ -208,131 +208,260 @@ $zones = @(
         Topmost="True" ShowInTaskbar="False" ResizeMode="NoResize"
         SizeToContent="WidthAndHeight" WindowStartupLocation="Manual"
         Left="-3000" Top="0">
-  <Border x:Name="Root" CornerRadius="12" Background="#FF121218" Padding="18,10,18,10"
-          BorderBrush="#FF2A2A35" BorderThickness="1">
-    <StackPanel x:Name="Rows"/>
-  </Border>
+  <Border x:Name="Root" BorderBrush="#FF2A2A35" BorderThickness="1"/>
 </Window>
 '@
 
 $reader = New-Object System.Xml.XmlNodeReader $xaml
 $window = [Windows.Markup.XamlReader]::Load($reader)
-$window.Opacity = $Opacity
 Set-WcWindowIcon $window
-$rows = $window.FindName('Rows')
 $root = $window.FindName('Root')
-
-# Size (scale) saved per PC
-$script:scale = 1.0
-if ($script:settings.PSObject.Properties['Scale']) {
-    try { $script:scale = [Math]::Min(2.0, [Math]::Max(0.6, [double]$script:settings.Scale)) } catch { }
-}
-$script:scaleTf = New-Object System.Windows.Media.ScaleTransform($script:scale, $script:scale)
-$root.LayoutTransform = $script:scaleTf
 
 $bc       = New-Object System.Windows.Media.BrushConverter
 $culture  = [Globalization.CultureInfo]::InvariantCulture
 $timeFont = New-Object System.Windows.Media.FontFamily 'Segoe UI Black, Arial Black, Segoe UI'
+$DateColor = '#FFC9CED4'   # date text (brighter)
 
-# Rows share the label column width so the clocks line up with a small gap
-[System.Windows.Controls.Grid]::SetIsSharedSizeScope($rows, $true)
+# ===== Display mode: Classic (stacked), BarA (taskbar, two-line labels), BarB (taskbar, one line) =====
+$Modes = @('Classic', 'BarA', 'BarB')
+$script:mode = 'Classic'
+if ($script:settings.PSObject.Properties['Mode'] -and ($Modes -contains $script:settings.Mode)) { $script:mode = $script:settings.Mode }
 
-$items = foreach ($z in $zones) {
-    $tz = [TimeZoneInfo]::FindSystemTimeZoneById($z.Id)
+# Size and position are remembered separately for each mode
+function Get-WcSetting([string]$name) {
+    $p = $script:settings.PSObject.Properties[$name]
+    if ($p) { return $p.Value } else { return $null }
+}
+function Set-WcSetting([string]$name, $value) {
+    $script:settings | Add-Member -NotePropertyName $name -NotePropertyValue $value -Force
+}
+# Older versions saved Scale/Left/Top for the stacked clock only
+if ((Get-WcSetting 'Scale') -ne $null -and (Get-WcSetting 'Scale_Classic') -eq $null) { Set-WcSetting 'Scale_Classic' (Get-WcSetting 'Scale') }
+if ((Get-WcSetting 'Left')  -ne $null -and (Get-WcSetting 'Left_Classic')  -eq $null) { Set-WcSetting 'Left_Classic'  (Get-WcSetting 'Left') }
+if ((Get-WcSetting 'Top')   -ne $null -and (Get-WcSetting 'Top_Classic')   -eq $null) { Set-WcSetting 'Top_Classic'   (Get-WcSetting 'Top') }
 
-    $grid = New-Object System.Windows.Controls.Grid
-    $grid.Margin = [System.Windows.Thickness]::new(0, 4, 0, 4)
-    $c0 = New-Object System.Windows.Controls.ColumnDefinition
-    $c0.Width = [System.Windows.GridLength]::Auto
-    $c0.SharedSizeGroup = 'Label'
-    $c1 = New-Object System.Windows.Controls.ColumnDefinition
-    $c1.Width = [System.Windows.GridLength]::Auto
-    [void]$grid.ColumnDefinitions.Add($c0)
-    [void]$grid.ColumnDefinitions.Add($c1)
+$script:scaleTf = New-Object System.Windows.Media.ScaleTransform(1.0, 1.0)
+$root.LayoutTransform = $script:scaleTf
+$script:scale = 1.0
+$script:items = @()
 
-    $left = New-Object System.Windows.Controls.StackPanel
-    $left.VerticalAlignment = 'Center'
+function New-WcText([string]$font, [double]$size, $weight, [string]$color) {
+    $tb = New-Object System.Windows.Controls.TextBlock
+    $tb.FontFamily = $font
+    $tb.FontSize = $size
+    $tb.FontWeight = $weight
+    $tb.Foreground = $bc.ConvertFromString($color)
+    $tb.VerticalAlignment = 'Center'
+    return $tb
+}
+function New-WcTime([double]$size) {
+    $tb = New-Object System.Windows.Controls.TextBlock
+    $tb.FontFamily = $timeFont
+    $tb.FontWeight = [System.Windows.FontWeights]::Black
+    $tb.FontSize = $size
+    $tb.Foreground = $bc.ConvertFromString('#FF6CFFA8')
+    $tb.VerticalAlignment = 'Center'
+    $tb.SetValue([System.Windows.Documents.Typography]::NumeralAlignmentProperty, [System.Windows.FontNumeralAlignment]::Tabular)
+    return $tb
+}
+function New-WcSeparator([double]$height) {
+    $sep = New-Object System.Windows.Shapes.Rectangle
+    $sep.Width = 1
+    $sep.Height = $height
+    $sep.Fill = $bc.ConvertFromString('#FF3A3A46')
+    $sep.Margin = [System.Windows.Thickness]::new(12, 0, 12, 0)
+    $sep.VerticalAlignment = 'Center'
+    return $sep
+}
 
-    $city = New-Object System.Windows.Controls.TextBlock
-    $city.FontFamily = 'Segoe UI'
-    $city.FontSize   = 17
-    $city.FontWeight = [System.Windows.FontWeights]::Bold
-    $city.Foreground = $bc.ConvertFromString('#FFE6E6E6')
+function Build-WcView {
+    $bold = [System.Windows.FontWeights]::Bold
+    $normalW = [System.Windows.FontWeights]::Normal
+    $list = New-Object System.Collections.ArrayList
 
-    $date = New-Object System.Windows.Controls.TextBlock
-    $date.FontFamily = 'Consolas'
-    $date.FontSize   = 12
-    $date.Foreground = $bc.ConvertFromString('#FF9AA0A6')
+    switch ($script:mode) {
+        'Classic' {
+            $window.Opacity = $Opacity
+            $root.CornerRadius = [System.Windows.CornerRadius]::new(12)
+            $root.Background = $bc.ConvertFromString('#FF121218')
+            $root.Padding = [System.Windows.Thickness]::new(18, 10, 18, 10)
+            $panel = New-Object System.Windows.Controls.StackPanel
+            [System.Windows.Controls.Grid]::SetIsSharedSizeScope($panel, $true)
+            foreach ($z in $zones) {
+                $grid = New-Object System.Windows.Controls.Grid
+                $grid.Margin = [System.Windows.Thickness]::new(0, 4, 0, 4)
+                $c0 = New-Object System.Windows.Controls.ColumnDefinition
+                $c0.Width = [System.Windows.GridLength]::Auto
+                $c0.SharedSizeGroup = 'Label'
+                $c1 = New-Object System.Windows.Controls.ColumnDefinition
+                $c1.Width = [System.Windows.GridLength]::Auto
+                [void]$grid.ColumnDefinitions.Add($c0)
+                [void]$grid.ColumnDefinitions.Add($c1)
+                $left = New-Object System.Windows.Controls.StackPanel
+                $left.VerticalAlignment = 'Center'
+                $city = New-WcText 'Segoe UI' 17 $bold '#FFE6E6E6'
+                $date = New-WcText 'Consolas' 12 $normalW $DateColor
+                [void]$left.Children.Add($city); [void]$left.Children.Add($date)
+                $time = New-WcTime 36
+                $time.Margin = [System.Windows.Thickness]::new(10, 0, 0, 0)
+                [System.Windows.Controls.Grid]::SetColumn($time, 1)
+                [void]$grid.Children.Add($left); [void]$grid.Children.Add($time)
+                [void]$panel.Children.Add($grid)
+                [void]$list.Add([pscustomobject]@{ Zone = $z; Tz = [TimeZoneInfo]::FindSystemTimeZoneById($z.Id); City = $city; Date = $date; Time = $time; CityFmt = 'full'; DateFmt = 'yyyy-MM-dd ddd' })
+            }
+            $root.Child = $panel
+        }
+        'BarA' {
+            $window.Opacity = 1.0
+            $root.CornerRadius = [System.Windows.CornerRadius]::new(8)
+            $root.Background = $bc.ConvertFromString('#E6121218')
+            $root.Padding = [System.Windows.Thickness]::new(12, 3, 12, 3)
+            $panel = New-Object System.Windows.Controls.StackPanel
+            $panel.Orientation = 'Horizontal'
+            $first = $true
+            foreach ($z in $zones) {
+                if (-not $first) { [void]$panel.Children.Add((New-WcSeparator 22)) }
+                $first = $false
+                $left = New-Object System.Windows.Controls.StackPanel
+                $left.VerticalAlignment = 'Center'
+                $city = New-WcText 'Segoe UI' 11 $bold '#FFE6E6E6'
+                $date = New-WcText 'Consolas' 10 $normalW $DateColor
+                [void]$left.Children.Add($city); [void]$left.Children.Add($date)
+                $time = New-WcTime 22
+                $time.Margin = [System.Windows.Thickness]::new(8, 0, 0, 0)
+                [void]$panel.Children.Add($left); [void]$panel.Children.Add($time)
+                [void]$list.Add([pscustomobject]@{ Zone = $z; Tz = [TimeZoneInfo]::FindSystemTimeZoneById($z.Id); City = $city; Date = $date; Time = $time; CityFmt = 'short'; DateFmt = 'MM-dd ddd' })
+            }
+            $root.Child = $panel
+        }
+        'BarB' {
+            $window.Opacity = 1.0
+            $root.CornerRadius = [System.Windows.CornerRadius]::new(15)
+            $root.Background = $bc.ConvertFromString('#E6121218')
+            $root.Padding = [System.Windows.Thickness]::new(14, 2, 14, 2)
+            $panel = New-Object System.Windows.Controls.StackPanel
+            $panel.Orientation = 'Horizontal'
+            $first = $true
+            foreach ($z in $zones) {
+                if (-not $first) { [void]$panel.Children.Add((New-WcSeparator 16)) }
+                $first = $false
+                $city = New-WcText 'Segoe UI' 11 $bold '#FFCFD3D8'
+                $time = New-WcTime 17
+                $time.Margin = [System.Windows.Thickness]::new(8, 0, 8, 0)
+                $date = New-WcText 'Consolas' 10 $normalW $DateColor
+                [void]$panel.Children.Add($city); [void]$panel.Children.Add($time); [void]$panel.Children.Add($date)
+                [void]$list.Add([pscustomobject]@{ Zone = $z; Tz = [TimeZoneInfo]::FindSystemTimeZoneById($z.Id); City = $city; Date = $date; Time = $time; CityFmt = 'label'; DateFmt = 'MM-dd ddd' })
+            }
+            $root.Child = $panel
+        }
+    }
+    $script:items = $list
 
-    [void]$left.Children.Add($city)
-    [void]$left.Children.Add($date)
-    [System.Windows.Controls.Grid]::SetColumn($left, 0)
-
-    $time = New-Object System.Windows.Controls.TextBlock
-    $time.FontFamily = $timeFont
-    $time.FontWeight = [System.Windows.FontWeights]::Black
-    $time.FontSize   = 36
-    $time.Foreground = $bc.ConvertFromString('#FF6CFFA8')
-    $time.VerticalAlignment = 'Center'
-    $time.Margin = [System.Windows.Thickness]::new(10, 0, 0, 0)
-    $time.SetValue([System.Windows.Documents.Typography]::NumeralAlignmentProperty, [System.Windows.FontNumeralAlignment]::Tabular)
-    [System.Windows.Controls.Grid]::SetColumn($time, 1)
-
-    [void]$grid.Children.Add($left)
-    [void]$grid.Children.Add($time)
-    [void]$rows.Children.Add($grid)
-
-    [pscustomobject]@{ Label = $z.Label; Std = $z.Std; Dst = $z.Dst; Tz = $tz; City = $city; Date = $date; Time = $time }
+    $s = Get-WcSetting ("Scale_" + $script:mode)
+    $script:scale = 1.0
+    if ($s -ne $null) { try { $script:scale = [Math]::Min(2.0, [Math]::Max(0.6, [double]$s)) } catch { } }
+    $script:scaleTf.ScaleX = $script:scale
+    $script:scaleTf.ScaleY = $script:scale
+    & $update
 }
 
 $update = {
     $utc = [DateTime]::UtcNow
-    foreach ($i in $items) {
-        $t   = [TimeZoneInfo]::ConvertTimeFromUtc($utc, $i.Tz)
-        $abbr = if ($i.Tz.IsDaylightSavingTime($t)) { $i.Dst } else { $i.Std }
-        $i.City.Text = '{0}  {1}' -f $i.Label, $abbr
-        $i.Date.Text = $t.ToString('yyyy-MM-dd ddd', $culture).ToUpper()
+    foreach ($i in $script:items) {
+        $t    = [TimeZoneInfo]::ConvertTimeFromUtc($utc, $i.Tz)
+        $abbr = if ($i.Tz.IsDaylightSavingTime($t)) { $i.Zone.Dst } else { $i.Zone.Std }
+        switch ($i.CityFmt) {
+            'full'  { $i.City.Text = '{0}  {1}' -f $i.Zone.Label, $abbr }
+            'short' { $i.City.Text = '{0} {1}' -f $i.Zone.Label, $abbr }
+            default { $i.City.Text = $i.Zone.Label }
+        }
+        $i.Date.Text = $t.ToString($i.DateFmt, $culture).ToUpper()
         $i.Time.Text = $t.ToString('HH:mm', $culture)
     }
 }
-& $update
+
+# Keep the clock above the taskbar in taskbar modes
+try {
+    Add-Type -Namespace WcNative -Name Win -MemberDefinition @'
+[DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr after, int x, int y, int cx, int cy, uint flags);
+'@ -ErrorAction Stop
+    $script:canPin = $true
+} catch { $script:canPin = $false }
+function Set-WcOnTop {
+    if (-not $script:canPin) { return }
+    try {
+        $h = (New-Object System.Windows.Interop.WindowInteropHelper($window)).Handle
+        if ($h -ne [IntPtr]::Zero) { [void][WcNative.Win]::SetWindowPos($h, [IntPtr](-1), 0, 0, 0, 0, 0x0013) }  # TOPMOST, NOSIZE|NOMOVE|NOACTIVATE
+    } catch { }
+}
 
 $timer = New-Object System.Windows.Threading.DispatcherTimer
 $timer.Interval = [TimeSpan]::FromMilliseconds(1000)
-$timer.Add_Tick($update)
-$timer.Start()
+$timer.Add_Tick({
+    & $update
+    if ($script:mode -ne 'Classic') { Set-WcOnTop }
+})
 
-# Save size and position so the next start opens the same way
+# Save size and position for the current mode
 function Save-WcLayout {
-    $script:settings | Add-Member -NotePropertyName Scale -NotePropertyValue ([Math]::Round($script:scale, 2)) -Force
-    $script:settings | Add-Member -NotePropertyName Left  -NotePropertyValue ([Math]::Round($window.Left)) -Force
-    $script:settings | Add-Member -NotePropertyName Top   -NotePropertyValue ([Math]::Round($window.Top)) -Force
+    Set-WcSetting 'Mode' $script:mode
+    Set-WcSetting ("Scale_" + $script:mode) ([Math]::Round($script:scale, 2))
+    Set-WcSetting ("Left_"  + $script:mode) ([Math]::Round($window.Left))
+    Set-WcSetting ("Top_"   + $script:mode) ([Math]::Round($window.Top))
     try { Save-WcSettings $script:settings } catch { }
 }
 
-# Place at top-right of the work area
-$placeTopRight = {
+# Default position: Classic = top-right, taskbar modes = on the taskbar left of the system clock
+function Set-WcDefaultPosition {
+    $window.UpdateLayout()
     $wa = [System.Windows.SystemParameters]::WorkArea
-    $window.Left = $wa.Right - $window.ActualWidth - $Margin
-    $window.Top  = $wa.Top + $Margin
+    if ($script:mode -eq 'Classic') {
+        $window.Left = $wa.Right - $window.ActualWidth - $Margin
+        $window.Top  = $wa.Top + $Margin
+    } else {
+        $screenH = [System.Windows.SystemParameters]::PrimaryScreenHeight
+        $screenW = [System.Windows.SystemParameters]::PrimaryScreenWidth
+        $band = $screenH - $wa.Bottom
+        if ($band -ge 24) {
+            $window.Top = $wa.Bottom + ($band - $window.ActualHeight) / 2
+        } else {
+            $window.Top = $wa.Bottom - $window.ActualHeight - 8   # taskbar hidden or not at the bottom
+        }
+        $window.Left = $screenW - $window.ActualWidth - 230
+    }
     Save-WcLayout
 }
 
-# First show: restore the last position if it is still on a screen, otherwise top-right
-$window.Add_ContentRendered({
-    $restored = $false
-    if ($script:settings.PSObject.Properties['Left'] -and $script:settings.PSObject.Properties['Top']) {
-        $l = [double]$script:settings.Left; $t = [double]$script:settings.Top
+# Restore the saved position for this mode if it is still on a screen
+function Restore-WcPosition {
+    $l = Get-WcSetting ("Left_" + $script:mode)
+    $t = Get-WcSetting ("Top_"  + $script:mode)
+    if ($l -ne $null -and $t -ne $null) {
+        $l = [double]$l; $t = [double]$t
         $vl = [System.Windows.SystemParameters]::VirtualScreenLeft
         $vt = [System.Windows.SystemParameters]::VirtualScreenTop
         $vr = $vl + [System.Windows.SystemParameters]::VirtualScreenWidth
         $vb = $vt + [System.Windows.SystemParameters]::VirtualScreenHeight
-        if ($l -ge $vl -and $t -ge $vt -and ($l + 40) -le $vr -and ($t + 20) -le $vb) {
-            $window.Left = $l; $window.Top = $t; $restored = $true
+        if ($l -ge $vl -and $t -ge $vt -and ($l + 40) -le $vr -and ($t + 10) -le $vb) {
+            $window.Left = $l; $window.Top = $t
+            return
         }
     }
-    if (-not $restored) { & $placeTopRight }
-})
+    Set-WcDefaultPosition
+}
+
+function Set-WcMode([string]$newMode) {
+    if ($newMode -eq $script:mode) { return }
+    Save-WcLayout
+    $script:mode = $newMode
+    Build-WcView
+    Restore-WcPosition
+    Save-WcLayout
+}
+
+Build-WcView
+$timer.Start()
+$window.Add_ContentRendered({ Restore-WcPosition; if ($script:mode -ne 'Classic') { Set-WcOnTop } })
 
 # Change size, keeping the right edge in place
 function Set-WcScale([double]$value) {
@@ -371,6 +500,32 @@ $openSettings = {
     $panel = New-Object System.Windows.Controls.StackPanel
     $panel.Margin = [System.Windows.Thickness]::new(24, 20, 24, 18)
 
+    $modeTitle = New-Object System.Windows.Controls.TextBlock
+    $modeTitle.Text = '시계 모양'
+    $modeTitle.FontSize = 14
+    $modeTitle.FontWeight = [System.Windows.FontWeights]::Bold
+    $modeTitle.Margin = [System.Windows.Thickness]::new(0, 0, 0, 6)
+    [void]$panel.Children.Add($modeTitle)
+
+    $script:modeRadios = @{}
+    foreach ($opt in @(
+        @{ Key = 'Classic'; Text = '1. 기본 (세로로 쌓은 큰 시계)' },
+        @{ Key = 'BarA';    Text = '2. 작업 표시줄 A (도시, 날짜 두 줄)' },
+        @{ Key = 'BarB';    Text = '3. 작업 표시줄 B (한 줄)' })) {
+        $rb = New-Object System.Windows.Controls.RadioButton
+        $rb.Content = $opt.Text
+        $rb.GroupName = 'WcMode'
+        $rb.FontSize = 13
+        $rb.Margin = [System.Windows.Thickness]::new(4, 2, 0, 2)
+        $rb.IsChecked = ($script:mode -eq $opt.Key)
+        $script:modeRadios[$opt.Key] = $rb
+        [void]$panel.Children.Add($rb)
+    }
+
+    $line = New-Object System.Windows.Controls.Separator
+    $line.Margin = [System.Windows.Thickness]::new(0, 12, 0, 12)
+    [void]$panel.Children.Add($line)
+
     $script:cbAuto = New-Object System.Windows.Controls.CheckBox
     $script:cbAuto.Content  = 'PC를 켤 때 자동 실행'
     $script:cbAuto.FontSize = 14
@@ -401,8 +556,11 @@ $openSettings = {
     $save.IsDefault = $true
     $save.Add_Click({
         $script:settings.AutoStart = [bool]$script:cbAuto.IsChecked
-        Save-WcSettings $script:settings
         try { Set-WcAutoStart ([bool]$script:settings.AutoStart) } catch { }
+        foreach ($k in $script:modeRadios.Keys) {
+            if ($script:modeRadios[$k].IsChecked) { Set-WcMode $k }
+        }
+        Save-WcSettings $script:settings
         $script:setWin.Close()
     })
 
@@ -444,8 +602,8 @@ $normal.Add_Click({ Set-WcScale 1.0 })
 [void]$sizeItem.Items.Add($normal)
 
 $reset = New-Object System.Windows.Controls.MenuItem
-$reset.Header = '오른쪽 위로 이동'
-$reset.Add_Click($placeTopRight)
+$reset.Header = '기본 위치로 이동'
+$reset.Add_Click({ Set-WcDefaultPosition })
 $close = New-Object System.Windows.Controls.MenuItem
 $close.Header = '닫기'
 $close.Add_Click({ Save-WcLayout; $timer.Stop(); $window.Close() })
