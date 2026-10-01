@@ -53,11 +53,14 @@ try { Set-WcAutoStart ([bool]$script:settings.AutoStart) } catch { }
 # ===== Icon and desktop shortcut =====
 $IconUrl  = 'https://raw.githubusercontent.com/SUNNY-duck/my-dashboard/main/worldclock/WorldClock.ico'
 $IconPath = Join-Path $AppDir 'WorldClock.ico'
-if (-not (Test-Path -LiteralPath $IconPath)) {
-    try {
-        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-        Invoke-WebRequest -Uri $IconUrl -OutFile $IconPath -UseBasicParsing -TimeoutSec 8 -ErrorAction Stop
-    } catch { }
+# Refresh the icon on every start so icon changes reach every PC
+try {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    $iconTmp = "$IconPath.download"
+    Invoke-WebRequest -Uri $IconUrl -OutFile $iconTmp -UseBasicParsing -TimeoutSec 8 -ErrorAction Stop
+    if ((Get-Item -LiteralPath $iconTmp).Length -gt 0) { Move-Item -LiteralPath $iconTmp -Destination $IconPath -Force }
+} catch {
+    Remove-Item -LiteralPath "$IconPath.download" -Force -ErrorAction SilentlyContinue
 }
 
 # Create the "세계시계" desktop shortcut once (not recreated if the user deletes it)
