@@ -1,6 +1,7 @@
-# World Clock widget : Los Angeles (LA) / Tokyo
+﻿# World Clock widget : Los Angeles (LA) / Tokyo
 # - Always on top, top-right corner, semi-transparent
-# - Drag with left mouse button, right-click > Close to exit
+# - Drag with left mouse button, right-click for menu (settings, close)
+# - First run asks whether to start with Windows; change later in right-click > settings
 
 # ===== Settings =====
 $Opacity = 0.7     # 1.0 = solid, 0.7 = 70% opacity
@@ -8,6 +9,46 @@ $Margin  = 12      # distance from screen edge (px)
 # ====================
 
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
+
+# ===== Start with Windows (asked once, saved per PC) =====
+$AppDir         = Join-Path $env:LOCALAPPDATA 'WorldClock'
+$SettingsPath   = Join-Path $AppDir 'settings.json'
+$StableLauncher = Join-Path $AppDir 'WorldClock.bat'
+$RunKey         = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+$RunName        = 'WorldClock'
+
+function Save-WcSettings($s) {
+    New-Item -ItemType Directory -Force -Path $AppDir | Out-Null
+    $s | ConvertTo-Json | Set-Content -LiteralPath $SettingsPath -Encoding UTF8
+}
+
+function Set-WcAutoStart([bool]$on) {
+    if ($on) {
+        if (Test-Path -LiteralPath $StableLauncher) {
+            # Start through the launcher so the latest version is downloaded at boot
+            $cmd = 'cmd.exe /c start "" /min "' + $StableLauncher + '"'
+        } else {
+            $cmd = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -WindowStyle Hidden -File "' + $PSCommandPath + '"'
+        }
+        New-ItemProperty -Path $RunKey -Name $RunName -Value $cmd -PropertyType String -Force | Out-Null
+    } else {
+        Remove-ItemProperty -Path $RunKey -Name $RunName -ErrorAction SilentlyContinue
+    }
+}
+
+$script:settings = $null
+if (Test-Path -LiteralPath $SettingsPath) {
+    try { $script:settings = Get-Content -LiteralPath $SettingsPath -Raw | ConvertFrom-Json } catch { }
+}
+if (-not $script:settings) {
+    $answer = [System.Windows.MessageBox]::Show(
+        "PC를 켤 때 세계시계를 자동으로 실행할까요?`n`n나중에 시계를 오른쪽 클릭해서 [설정]에서 바꿀 수 있습니다.",
+        '세계시계', [System.Windows.MessageBoxButton]::YesNo, [System.Windows.MessageBoxImage]::Question)
+    $script:settings = [pscustomobject]@{ AutoStart = ($answer -eq [System.Windows.MessageBoxResult]::Yes) }
+    Save-WcSettings $script:settings
+}
+try { Set-WcAutoStart ([bool]$script:settings.AutoStart) } catch { }
+# =========================================================
 
 $zones = @(
     @{ Label = 'LA';    Id = 'Pacific Standard Time'; Std = 'PST'; Dst = 'PDT' }  # Amazon US report time, DST applied automatically
@@ -116,14 +157,65 @@ $window.Add_ContentRendered($placeTopRight)
 # Drag to move
 $window.Add_MouseLeftButtonDown({ $window.DragMove() })
 
+# Settings window
+$openSettings = {
+    $script:setWin = New-Object System.Windows.Window
+    $script:setWin.Title = '세계시계 설정'
+    $script:setWin.SizeToContent = 'WidthAndHeight'
+    $script:setWin.ResizeMode = 'NoResize'
+    $script:setWin.WindowStartupLocation = 'CenterScreen'
+    $script:setWin.Topmost = $true
+
+    $panel = New-Object System.Windows.Controls.StackPanel
+    $panel.Margin = [System.Windows.Thickness]::new(24, 20, 24, 18)
+
+    $script:cbAuto = New-Object System.Windows.Controls.CheckBox
+    $script:cbAuto.Content  = 'PC를 켤 때 자동 실행'
+    $script:cbAuto.FontSize = 14
+    $script:cbAuto.IsChecked = [bool]$script:settings.AutoStart
+
+    $buttons = New-Object System.Windows.Controls.StackPanel
+    $buttons.Orientation = 'Horizontal'
+    $buttons.HorizontalAlignment = 'Right'
+    $buttons.Margin = [System.Windows.Thickness]::new(0, 18, 0, 0)
+
+    $save = New-Object System.Windows.Controls.Button
+    $save.Content = '저장'
+    $save.Width = 72
+    $save.IsDefault = $true
+    $save.Add_Click({
+        $script:settings.AutoStart = [bool]$script:cbAuto.IsChecked
+        Save-WcSettings $script:settings
+        try { Set-WcAutoStart ([bool]$script:settings.AutoStart) } catch { }
+        $script:setWin.Close()
+    })
+
+    $cancel = New-Object System.Windows.Controls.Button
+    $cancel.Content = '취소'
+    $cancel.Width = 72
+    $cancel.IsCancel = $true
+    $cancel.Margin = [System.Windows.Thickness]::new(8, 0, 0, 0)
+
+    [void]$buttons.Children.Add($save)
+    [void]$buttons.Children.Add($cancel)
+    [void]$panel.Children.Add($script:cbAuto)
+    [void]$panel.Children.Add($buttons)
+    $script:setWin.Content = $panel
+    [void]$script:setWin.ShowDialog()
+}
+
 # Right-click menu
 $menu = New-Object System.Windows.Controls.ContextMenu
+$settingsItem = New-Object System.Windows.Controls.MenuItem
+$settingsItem.Header = '설정'
+$settingsItem.Add_Click($openSettings)
 $reset = New-Object System.Windows.Controls.MenuItem
-$reset.Header = 'Move to top-right'
+$reset.Header = '오른쪽 위로 이동'
 $reset.Add_Click($placeTopRight)
 $close = New-Object System.Windows.Controls.MenuItem
-$close.Header = 'Close'
+$close.Header = '닫기'
 $close.Add_Click({ $timer.Stop(); $window.Close() })
+[void]$menu.Items.Add($settingsItem)
 [void]$menu.Items.Add($reset)
 [void]$menu.Items.Add($close)
 $window.ContextMenu = $menu

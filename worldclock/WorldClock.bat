@@ -7,6 +7,7 @@ rem  - Double-click again: closes the running widget and reopens the latest
 rem ============================================================
 
 rem ---- Address of the latest WorldClock.ps1 (web URL or shared folder path) ----
+set "WC_LAUNCHER=%~f0"
 set "WC_SOURCE=https://raw.githubusercontent.com/SUNNY-duck/my-dashboard/main/worldclock/WorldClock.ps1"
 
 powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "& ([scriptblock]::Create(((Get-Content -LiteralPath '%~f0' -Raw) -split ('#PS'+'-START#'),2)[1]))"
@@ -44,12 +45,19 @@ if (-not (Test-Path -LiteralPath $local)) {
     exit
 }
 
-# 2. Close a widget that is already running
+# 2. Keep a copy of this launcher for "start with Windows"
+$stable = Join-Path $dir 'WorldClock.bat'
+$me = $env:WC_LAUNCHER
+if ($me -and (Test-Path -LiteralPath $me) -and ($me -ne $stable)) {
+    Copy-Item -LiteralPath $me -Destination $stable -Force -ErrorAction SilentlyContinue
+}
+
+# 3. Close a widget that is already running
 Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" |
     Where-Object { $_.CommandLine -and $_.CommandLine.Contains($local) } |
     ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 
-# 3. Start the widget with no console window
+# 4. Start the widget with no console window
 Start-Process powershell.exe -WindowStyle Hidden -ArgumentList @(
     '-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA', '-WindowStyle', 'Hidden', '-File', "`"$local`""
 )
