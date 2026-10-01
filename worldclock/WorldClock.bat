@@ -7,7 +7,7 @@ rem  - Double-click again: closes the running widget and reopens the latest
 rem ============================================================
 
 rem ---- Address of the latest WorldClock.ps1 (web URL or shared folder path) ----
-set "WC_SOURCE=https://raw.githubusercontent.com/SUNNY-duck/worldclock/main/WorldClock.ps1"
+set "WC_SOURCE=https://raw.githubusercontent.com/SUNNY-duck/my-dashboard/main/worldclock/WorldClock.ps1"
 
 powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "& ([scriptblock]::Create(((Get-Content -LiteralPath '%~f0' -Raw) -split ('#PS'+'-START#'),2)[1]))"
 exit /b
